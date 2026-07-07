@@ -19,6 +19,10 @@ struct TokenUsageInfo {
     used: u64,
     total: u64,
     percentage: Option<f64>,
+    /// Tokens served from the prompt cache this turn, when the source exposes
+    /// the breakdown. `None` means the data source only reported an aggregate
+    /// (e.g. mock/`context_used`), so no cache hit rate can be derived.
+    cache_read: Option<u64>,
 }
 
 /// Tokens component
@@ -104,6 +108,7 @@ impl TokensComponent {
             used,
             total,
             percentage,
+            cache_read: Some(cache_read),
         })
     }
 
@@ -129,6 +134,7 @@ impl TokensComponent {
                 used,
                 total: window,
                 percentage: None,
+                cache_read: None,
             });
         }
 
@@ -153,6 +159,7 @@ impl TokensComponent {
                         used,
                         total: window,
                         percentage: None,
+                        cache_read: Some(tokens.cache_read_input),
                     });
                 }
             }
@@ -163,6 +170,7 @@ impl TokensComponent {
                 used: 0,
                 total: window,
                 percentage: Some(0.0),
+                cache_read: None,
             });
         }
         None
@@ -354,6 +362,59 @@ impl TokensComponent {
             format!("({used_k:.1}k/{total_k:.0}k)")
         }
     }
+
+    /// Format the current-turn cache hit rate, e.g. `⚡92%`.
+    ///
+    /// Returns `None` unless `show_cache_rate` is enabled, the data source
+    /// exposed the cache-read breakdown, and there is a non-zero input side to
+    /// divide by. The rate is `cache_read / used` — how much of the current
+    /// context was served from the prompt cache.
+    fn format_cache_rate(&self, info: &TokenUsageInfo, ctx: &RenderContext) -> Option<String> {
+        if !self.config.show_cache_rate {
+            return None;
+        }
+        let cache_read = info.cache_read?;
+        if info.used == 0 {
+            return None;
+        }
+        let rate = (to_f64(cache_read) / to_f64(info.used) * 100.0).clamp(0.0, 100.0);
+        let marker = Self::cache_rate_marker(ctx);
+        if marker.is_empty() {
+            Some(format!("{rate:.0}%"))
+        } else {
+            Some(format!("{marker}{rate:.0}%"))
+        }
+    }
+
+    /// Pick a terminal-appropriate glyph that flags the following number as a
+    /// cache hit rate (disambiguating it from the context-usage percentage).
+    /// Mirrors `Component::select_icon`'s nerd/emoji/text precedence; returns an
+    /// empty string on text-only terminals so plain output stays clean.
+    fn cache_rate_marker(ctx: &RenderContext) -> &'static str {
+        const NERD_BOLT: &str = "\u{f0e7}";
+        const EMOJI_BOLT: &str = "⚡";
+
+        let terminal_cfg = &ctx.config.terminal;
+        let terminal = &ctx.terminal;
+        let style = &ctx.config.style;
+
+        if terminal_cfg.force_text {
+            return "";
+        }
+        if terminal_cfg.force_nerd_font {
+            return NERD_BOLT;
+        }
+        if terminal_cfg.force_emoji {
+            return EMOJI_BOLT;
+        }
+        if terminal.supports_nerd_font && style.enable_nerd_font.is_enabled(true) {
+            NERD_BOLT
+        } else if terminal.supports_emoji && style.enable_emoji.is_enabled(true) {
+            EMOJI_BOLT
+        } else {
+            ""
+        }
+    }
 }
 
 #[async_trait]
@@ -406,6 +467,10 @@ impl Component for TokensComponent {
         }
 
         parts.push(self.format_usage(&usage));
+
+        if let Some(cache_rate) = self.format_cache_rate(&usage, ctx) {
+            parts.push(cache_rate);
+        }
 
         if let Some(status_icon) = self.select_status_icon(ctx, clamped_percentage) {
             parts.push(status_icon);
@@ -1159,5 +1224,106 @@ mod tests {
         assert!(output.visible);
         // Should fallback to default 200k
         assert!(output.text.contains("(10000/200000)"));
+    }
+
+    // ==================== 缓存命中率测试 ====================
+
+    fn cache_rate_input(
+        session: &str,
+        input: u64,
+        cache_creation: u64,
+        cache_read: u64,
+    ) -> InputData {
+        build_input(|data| {
+            data.session_id = Some(session.to_string());
+            data.extra = json!({
+                "context_window": {
+                    "context_window_size": 200_000u64,
+                    "current_usage": {
+                        "input_tokens": input,
+                        "output_tokens": 500u64,
+                        "cache_creation_input_tokens": cache_creation,
+                        "cache_read_input_tokens": cache_read
+                    }
+                }
+            });
+        })
+    }
+
+    #[tokio::test]
+    async fn test_tokens_cache_rate_shown_when_enabled() {
+        let ctx = RenderContext {
+            input: Arc::new(cache_rate_input("cache-session", 10_000, 0, 90_000)),
+            config: Arc::new(Config::default()),
+            terminal: TerminalCapabilities::default(),
+            preview_mode: false,
+        };
+        let config = build_tokens_config(|config| {
+            config.show_progress_bar = false;
+            config.show_percentage = false;
+            config.show_raw_numbers = true;
+            config.show_cache_rate = true;
+        });
+
+        let component = TokensComponent::new(config);
+        let output = component.render(&ctx).await;
+
+        assert!(output.visible);
+        // used = 10_000 + 0 + 90_000 = 100_000; rate = 90_000 / 100_000 = 90%
+        assert!(output.text.contains("(100000/200000)"));
+        assert!(
+            output.text.contains("90%"),
+            "expected cache rate, got {}",
+            output.text
+        );
+    }
+
+    #[tokio::test]
+    async fn test_tokens_cache_rate_hidden_when_disabled() {
+        let ctx = RenderContext {
+            input: Arc::new(cache_rate_input("cache-session", 10_000, 0, 90_000)),
+            config: Arc::new(Config::default()),
+            terminal: TerminalCapabilities::default(),
+            preview_mode: false,
+        };
+        let config = build_tokens_config(|config| {
+            config.show_progress_bar = false;
+            config.show_percentage = false;
+            config.show_raw_numbers = true;
+            config.show_cache_rate = false;
+        });
+
+        let component = TokensComponent::new(config);
+        let output = component.render(&ctx).await;
+
+        assert!(output.visible);
+        assert!(
+            !output.text.contains('%'),
+            "cache rate leaked: {}",
+            output.text
+        );
+    }
+
+    #[tokio::test]
+    async fn test_tokens_cache_rate_absent_without_breakdown() {
+        // Mock path only carries context_used, never a cache_read breakdown.
+        let ctx = create_test_context_with_tokens(100_000);
+        let config = build_tokens_config(|config| {
+            config.show_progress_bar = false;
+            config.show_percentage = false;
+            config.show_raw_numbers = true;
+            config.show_cache_rate = true;
+        });
+
+        let component = TokensComponent::new(config);
+        let output = component.render(&ctx).await;
+
+        assert!(output.visible);
+        assert!(output.text.contains("(100000/200000)"));
+        assert!(
+            !output.text.contains('%'),
+            "unexpected cache rate: {}",
+            output.text
+        );
     }
 }

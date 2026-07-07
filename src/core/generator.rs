@@ -306,11 +306,12 @@ impl StatuslineGenerator {
         // Render components
         let component_results = self.render_components(&context).await?;
 
-        // Apply theme rendering
+        // Apply theme rendering. When wrapping is enabled and Claude Code told
+        // us the terminal width (`$COLUMNS`), fold the main line across rows so
+        // narrow terminals (e.g. phone Termux) don't clip it. Wide terminals and
+        // unknown-width contexts render a single line exactly as before.
         let colors = self.extract_component_colors(&component_results);
-        let main_line = self
-            .theme_renderer
-            .render(&component_results, &colors, &context)?;
+        let main_lines = self.render_main_lines(&component_results, &colors, &context)?;
 
         // Render multiline extensions
         let extension_result = self
@@ -319,8 +320,10 @@ impl StatuslineGenerator {
             .await;
 
         let mut lines = Vec::new();
-        if !main_line.is_empty() {
-            lines.push(main_line);
+        for main_line in main_lines {
+            if !main_line.is_empty() {
+                lines.push(main_line);
+            }
         }
 
         if extension_result.success {
@@ -337,6 +340,36 @@ impl StatuslineGenerator {
         }
 
         Ok(result)
+    }
+
+    /// Render the main statusline row(s), folding across the terminal width when
+    /// `[style] wrap` is on, `$COLUMNS` is known, and the theme is foldable.
+    ///
+    /// `wrap_margin` columns are held back from `$COLUMNS`: Claude Code pads
+    /// the statusline left by 2 and truncates with `…` one column early, so
+    /// rows packed to the full width would lose their tail.
+    fn render_main_lines(
+        &self,
+        components: &[ComponentOutput],
+        colors: &[String],
+        context: &RenderContext,
+    ) -> Result<Vec<String>> {
+        if self.config.style.wrap {
+            if let Some(columns) = crate::core::wrap::terminal_columns() {
+                if let Some((parts, separator)) = self
+                    .theme_renderer
+                    .foldable_parts(components, colors, context)?
+                {
+                    let margin = usize::try_from(self.config.style.wrap_margin).unwrap_or(3);
+                    let width = columns.saturating_sub(margin).max(1);
+                    return Ok(crate::core::wrap::pack(&parts, &separator, width));
+                }
+            }
+        }
+
+        Ok(vec![self
+            .theme_renderer
+            .render(components, colors, context)?])
     }
 
     fn extract_component_colors(&self, components: &[ComponentOutput]) -> Vec<String> {

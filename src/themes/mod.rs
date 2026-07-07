@@ -347,6 +347,26 @@ pub trait ThemeRenderer: Send + Sync {
         context: &RenderContext,
     ) -> Result<String>;
 
+    /// Return the per-component, self-contained rendered segments plus the
+    /// in-line separator used between them, for width-adaptive folding.
+    ///
+    /// `None` (the default) means the theme is not foldable — its segments are
+    /// visually chained (e.g. powerline's arrows depend on the neighbouring
+    /// segment's colour), so callers should fall back to single-line `render`.
+    /// Themes whose segments stand alone (classic, capsule) override this.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the renderer fails to format the segments.
+    fn foldable_parts(
+        &self,
+        _components: &[ComponentOutput],
+        _colors: &[String],
+        _context: &RenderContext,
+    ) -> Result<Option<(Vec<String>, String)>> {
+        Ok(None)
+    }
+
     /// Get theme name
     fn name(&self) -> &str;
 }

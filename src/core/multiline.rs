@@ -268,6 +268,7 @@ impl MultiLineRenderer {
                     }
                 },
                 WidgetType::Input => self.render_input_widget(widget_config, context),
+                WidgetType::File => self.render_file_widget(widget_config, context),
             };
 
             if let Some(final_text) = widget_output {
@@ -431,6 +432,79 @@ impl MultiLineRenderer {
             &context.terminal,
             &self.config,
         ))
+    }
+
+    /// Render a widget whose data source is a local JSON file.
+    ///
+    /// Typically a cache refreshed out-of-band by a cron sidecar (e.g. monthly
+    /// Bailian cost). No network and no per-render cost: the expensive query
+    /// lives in the sidecar; this only reads and templates the file.
+    ///
+    /// A missing file hides the widget silently (the sidecar may not have run
+    /// yet); malformed JSON is logged and the widget hidden.
+    fn render_file_widget(&self, widget: &WidgetConfig, context: &RenderContext) -> Option<String> {
+        let file_config = widget.file.as_ref()?;
+        let path = Self::resolve_widget_path(&substitute_env(&file_config.path));
+
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            // Missing/unreadable cache file → hide (not an error worth logging).
+            return None;
+        };
+
+        let json: Value = match serde_json::from_str(&contents) {
+            Ok(value) => value,
+            Err(err) => {
+                eprintln!(
+                    "[statusline] file widget {}: invalid JSON: {err}",
+                    path.display()
+                );
+                return None;
+            }
+        };
+
+        let selected = if let Some(data_path) = file_config.data_path.as_deref() {
+            match jsonpath::select(&json, data_path) {
+                Ok(matches) => match matches.first() {
+                    Some(value) => (*value).clone(),
+                    None => return None,
+                },
+                Err(err) => {
+                    eprintln!("[statusline] file widget JSONPath {data_path:?} error: {err}");
+                    return None;
+                }
+            }
+        } else {
+            json.clone()
+        };
+
+        if !Self::passes_filter(widget, &json) {
+            return None;
+        }
+
+        let rendered_text = widget.template.as_deref().map_or_else(
+            || selected.to_string(),
+            |template| {
+                let template = substitute_env(template);
+                render_template(&template, &selected)
+            },
+        );
+
+        Some(Self::compose_with_icon(
+            widget,
+            &rendered_text,
+            &context.terminal,
+            &self.config,
+        ))
+    }
+
+    /// Resolve a widget file path, expanding a leading `~/` to the home dir.
+    fn resolve_widget_path(path: &str) -> PathBuf {
+        if let Some(rest) = path.strip_prefix("~/") {
+            if let Some(home) = utils::home_dir() {
+                return home.join(rest);
+            }
+        }
+        PathBuf::from(path)
     }
 
     async fn fetch_api_data(&self, config: &WidgetApiConfig) -> Result<ApiData> {
@@ -1713,5 +1787,133 @@ data_path = "$.rate_limits.five_hour"
 
         // 清理测试环境变量
         std::env::remove_var("TEST_VAR");
+    }
+
+    #[tokio::test]
+    async fn test_file_widget_reads_json_cache() -> TestResult {
+        let mut config = Config {
+            multiline: Some(MultilineConfig {
+                enabled: true,
+                max_rows: 5,
+                rows: HashMap::new(),
+            }),
+            ..Config::default()
+        };
+        config.components.order = vec!["usage".to_string()];
+
+        let temp_dir = tempfile::tempdir()?;
+        let cache_path = temp_dir.path().join("bailian.json");
+        std::fs::write(&cache_path, r#"{"cny": 12.34, "month": "2026-07"}"#)?;
+
+        let component_path = temp_dir.path().join("components").join("usage.toml");
+        std::fs::create_dir_all(
+            component_path
+                .parent()
+                .context("component path missing parent directory")?,
+        )?;
+        std::fs::write(
+            &component_path,
+            format!(
+                r#"
+[widgets.cost]
+enabled = true
+type = "file"
+row = 2
+col = 0
+nerd_icon = ""
+emoji_icon = "💰"
+text_icon = "[Y]"
+template = "¥{{cny:.2f}}"
+
+[widgets.cost.file]
+path = "{}"
+"#,
+                cache_path.display()
+            ),
+        )?;
+
+        let mut renderer =
+            MultiLineRenderer::new(config.clone(), Some(temp_dir.path().to_path_buf()));
+        let context = RenderContext {
+            input: Arc::new(InputData::default()),
+            config: Arc::new(config),
+            terminal: TerminalCapabilities {
+                color_support: ColorSupport::TrueColor,
+                supports_emoji: false,
+                supports_nerd_font: false,
+            },
+            preview_mode: false,
+        };
+
+        let result = renderer.render_extension_lines(&context).await;
+        assert!(result.success, "render failed: {:?}", result.error);
+        assert_eq!(result.lines.len(), 1);
+        assert!(
+            result.lines[0].contains("¥12.34"),
+            "expected ¥12.34, got {:?}",
+            result.lines[0]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_file_widget_hidden_when_file_missing() -> TestResult {
+        let mut config = Config {
+            multiline: Some(MultilineConfig {
+                enabled: true,
+                max_rows: 5,
+                rows: HashMap::new(),
+            }),
+            ..Config::default()
+        };
+        config.components.order = vec!["usage".to_string()];
+
+        let temp_dir = tempfile::tempdir()?;
+        let missing = temp_dir.path().join("does-not-exist.json");
+
+        let component_path = temp_dir.path().join("components").join("usage.toml");
+        std::fs::create_dir_all(
+            component_path
+                .parent()
+                .context("component path missing parent directory")?,
+        )?;
+        std::fs::write(
+            &component_path,
+            format!(
+                r#"
+[widgets.cost]
+enabled = true
+type = "file"
+row = 2
+col = 0
+nerd_icon = ""
+emoji_icon = "💰"
+text_icon = "[Y]"
+template = "¥{{cny:.2f}}"
+
+[widgets.cost.file]
+path = "{}"
+"#,
+                missing.display()
+            ),
+        )?;
+
+        let mut renderer =
+            MultiLineRenderer::new(config.clone(), Some(temp_dir.path().to_path_buf()));
+        let context = RenderContext {
+            input: Arc::new(InputData::default()),
+            config: Arc::new(config),
+            terminal: TerminalCapabilities::default(),
+            preview_mode: false,
+        };
+
+        let result = renderer.render_extension_lines(&context).await;
+        assert!(result.success);
+        assert!(
+            result.lines.is_empty(),
+            "expected missing cache file to hide widget, got {:?}",
+            result.lines
+        );
+        Ok(())
     }
 }

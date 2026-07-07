@@ -217,6 +217,20 @@ pub struct StyleConfig {
     /// Space after separator
     #[serde(default = "default_space")]
     pub separator_after: String,
+
+    /// Fold the main line across multiple rows when it exceeds the terminal
+    /// width (`$COLUMNS`, injected by Claude Code). Only takes effect for
+    /// foldable themes (classic/capsule) and when the width is known; a wide
+    /// terminal renders identically to before. `false` keeps a single line.
+    #[serde(default = "default_true")]
+    pub wrap: bool,
+
+    /// Columns subtracted from `$COLUMNS` when folding. Claude Code pads the
+    /// statusline 2 columns left and truncates with `…` one column early, so
+    /// only `COLUMNS - 3` columns are actually drawable (measured on 2.1.201).
+    /// Raise this if an outer wrapper (tmux/zellij pane frames) eats more.
+    #[serde(default = "default_wrap_margin")]
+    pub wrap_margin: u32,
 }
 
 impl Default for StyleConfig {
@@ -229,6 +243,8 @@ impl Default for StyleConfig {
             separator_color: default_white(),
             separator_before: default_space(),
             separator_after: default_space(),
+            wrap: default_true(),
+            wrap_margin: default_wrap_margin(),
         }
     }
 }
@@ -573,6 +589,12 @@ pub struct TokensComponentConfig {
     #[serde(default)]
     pub show_raw_numbers: bool,
 
+    /// Show the current-turn cache hit rate (`cache_read` / used) as `⚡NN%`.
+    /// On by default; only renders when the source exposes the cache breakdown,
+    /// so it self-suppresses when unavailable.
+    #[serde(default = "default_true")]
+    pub show_cache_rate: bool,
+
     #[serde(default = "default_progress_width")]
     pub progress_width: u32,
 
@@ -611,6 +633,7 @@ impl Default for TokensComponentConfig {
             show_progress_bar: true,
             show_percentage: true,
             show_raw_numbers: false,
+            show_cache_rate: true,
             progress_width: default_progress_width(),
             show_gradient: false,
             progress_bar_chars: TokensProgressBarCharsConfig::default(),
@@ -793,6 +816,25 @@ pub struct RateLimitComponentConfig {
     /// Show reset countdowns when `resets_at` is available
     #[serde(default = "default_true")]
     pub show_reset: bool,
+
+    /// Usage endpoint path/URL queried when stdin carries no `rate_limits` and
+    /// `ANTHROPIC_BASE_URL` points at a non-official gateway (e.g. cc-bridge).
+    /// Relative paths join with `ANTHROPIC_BASE_URL`; absolute `http(s)://` URLs
+    /// are used verbatim. `None` (default) auto-probes `"/v1/usage"`; set to an
+    /// empty string to disable the auto-probe entirely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_endpoint: Option<String>,
+
+    /// Safety gate: only query `usage_endpoint` when `ANTHROPIC_BASE_URL`
+    /// contains this substring. Prevents leaking the token to an official
+    /// endpoint that has no `/v1/usage`. `None` = fire whenever the endpoint
+    /// is configured and a base URL is present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_endpoint_detect: Option<String>,
+
+    /// Timeout for the usage endpoint request, in milliseconds.
+    #[serde(default = "default_usage_timeout_ms")]
+    pub usage_timeout_ms: u64,
 }
 
 impl Default for RateLimitComponentConfig {
@@ -809,6 +851,9 @@ impl Default for RateLimitComponentConfig {
             show_five_hour: true,
             show_seven_day: true,
             show_reset: true,
+            usage_endpoint: None,
+            usage_endpoint_detect: None,
+            usage_timeout_ms: default_usage_timeout_ms(),
         }
     }
 }
@@ -1161,6 +1206,16 @@ fn default_language() -> String {
 
 const fn default_true() -> bool {
     true
+}
+
+/// Claude Code's statusline reserve: 2 columns of left padding plus the
+/// column where Ink truncates with `…` (measured empirically on 2.1.201).
+const fn default_wrap_margin() -> u32 {
+    3
+}
+
+const fn default_usage_timeout_ms() -> u64 {
+    800
 }
 
 const fn default_expiry() -> u32 {

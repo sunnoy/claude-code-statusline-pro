@@ -117,6 +117,7 @@ fn parse_file(path: &Path) -> Option<WidgetFile> {
                 claude_code_statusline_pro::config::WidgetType::Static => "static".to_string(),
                 claude_code_statusline_pro::config::WidgetType::Api => "api".to_string(),
                 claude_code_statusline_pro::config::WidgetType::Input => "input".to_string(),
+                claude_code_statusline_pro::config::WidgetType::File => "file".to_string(),
             },
             row: cfg.row,
             col: cfg.col,
@@ -141,14 +142,15 @@ pub fn toggle_enabled(path: &Path, widget_name: &str) -> Result<bool> {
     Ok(!current)
 }
 
-/// 在 static → api → input → static 之间循环。返回新类型字符串。
+/// 在 static → api → input → file → static 之间循环。返回新类型字符串。
 pub fn cycle_type(path: &Path, widget_name: &str) -> Result<String> {
     let mut doc = load_document(path)?;
     let current = widget_get_string(&doc, widget_name, "type").unwrap_or_else(|| "static".into());
     let next = match current.as_str() {
         "static" => "api",
         "api" => "input",
-        "input" => "static",
+        "input" => "file",
+        "file" => "static",
         _ => "static",
     };
     widget_set(&mut doc, widget_name, "type", toml_value(next))?;
@@ -448,6 +450,8 @@ content = "from user layer"
         let new_type = cycle_type(&path, "foo")?;
         assert_eq!(new_type, "input");
         let new_type = cycle_type(&path, "foo")?;
+        assert_eq!(new_type, "file");
+        let new_type = cycle_type(&path, "foo")?;
         assert_eq!(new_type, "static");
         Ok(())
     }
@@ -546,6 +550,8 @@ content = "from user layer"
         let new_type = cycle_type(&path, "foo")?;
         assert_eq!(new_type, "input");
         let new_type = cycle_type(&path, "foo")?;
+        assert_eq!(new_type, "file");
+        let new_type = cycle_type(&path, "foo")?;
         assert_eq!(new_type, "static");
         Ok(())
     }
@@ -572,7 +578,7 @@ template = "{used_percentage:.0f}%"
         )?;
 
         let new_type = cycle_type(&path, "rl5h")?;
-        assert_eq!(new_type, "static");
+        assert_eq!(new_type, "file");
         Ok(())
     }
 

@@ -32,9 +32,21 @@ impl ThemeRenderer for ClassicThemeRenderer {
     fn render(
         &self,
         components: &[ComponentOutput],
-        _colors: &[String],
+        colors: &[String],
         context: &RenderContext,
     ) -> Result<String> {
+        let Some((parts, separator)) = self.foldable_parts(components, colors, context)? else {
+            return Ok(String::new());
+        };
+        Ok(parts.join(&separator))
+    }
+
+    fn foldable_parts(
+        &self,
+        components: &[ComponentOutput],
+        _colors: &[String],
+        context: &RenderContext,
+    ) -> Result<Option<(Vec<String>, String)>> {
         let supports_colors = context.terminal.supports_colors()
             && context
                 .config
@@ -65,7 +77,7 @@ impl ThemeRenderer for ClassicThemeRenderer {
             supports_colors,
         );
 
-        // Collect visible components
+        // Collect visible components as self-contained segments.
         let mut parts = Vec::new();
 
         for component in components {
@@ -99,8 +111,7 @@ impl ThemeRenderer for ClassicThemeRenderer {
             }
         }
 
-        // Join with separator
-        Ok(parts.join(&colored_separator))
+        Ok(Some((parts, colored_separator)))
     }
 
     fn name(&self) -> &'static str {
@@ -214,6 +225,31 @@ mod tests {
         let colors = vec![];
         let result = theme.render(&components, &colors, &ctx)?;
         assert_eq!(result, "One / Two");
+        Ok(())
+    }
+
+    #[test]
+    fn test_classic_foldable_parts_returns_segments() -> TestResult {
+        let theme = ClassicThemeRenderer::new();
+        let ctx = create_test_context();
+
+        let components = vec![
+            ComponentOutput::new("One".to_string()),
+            ComponentOutput::hidden(),
+            ComponentOutput::new("Two".to_string()),
+        ];
+
+        let (parts, separator) = theme
+            .foldable_parts(&components, &[], &ctx)?
+            .unwrap_or_default();
+        // Hidden component is dropped; visible segments are self-contained.
+        assert_eq!(parts, vec!["One".to_string(), "Two".to_string()]);
+        assert_eq!(separator, " | ");
+        // render() must still equal parts.join(separator).
+        assert_eq!(
+            theme.render(&components, &[], &ctx)?,
+            parts.join(&separator)
+        );
         Ok(())
     }
 }

@@ -7,6 +7,7 @@
 pub mod generator;
 pub mod input;
 pub mod multiline;
+pub mod wrap;
 
 // Re-export commonly used types
 pub use generator::{GeneratorOptions, StatuslineGenerator};

@@ -380,6 +380,7 @@ dependencies = [
  "proptest",
  "ratatui",
  "regex",
+ "rustls",
  "serde",
  "serde_json",
  "serial_test",
@@ -387,6 +388,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "toml_edit",
+ "unicode-width",
  "ureq",
 ]
 

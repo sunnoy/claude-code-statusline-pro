@@ -53,11 +53,21 @@ chrono = { version = "0.4", features = ["serde"] }
 lazy_static = "1.4"
 regex = "1.12"
 async-trait = "0.1"
+# 折行时按显示列宽计算(CJK/全角=2),等价于 python 的 east_asian_width
+unicode-width = "0.2"
 dialoguer = "0.12.0"
 jsonpath_lib = "0.3"
 ureq = { version = "2.12", default-features = false, features = [
     "json",
     "tls",
+] }
+# 自签证书网关的额度探测:NODE_TLS_REJECT_UNAUTHORIZED=0 时跳过 TLS 校验。
+# 与 ureq 共用同一份 rustls(+ring provider);default-features=false 避免拉入 aws-lc-rs。
+rustls = { version = "0.23", default-features = false, features = [
+    "ring",
+    "std",
+    "tls12",
+    "logging",
 ] }
 dateparser = "0.3"
 

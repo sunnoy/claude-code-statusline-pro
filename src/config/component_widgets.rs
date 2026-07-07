@@ -30,6 +30,12 @@ pub enum WidgetType {
     /// Reads fields directly from the Claude Code stdin payload
     /// (e.g. `rate_limits`, `version`, `agent.name`).
     Input,
+    /// Reads a local JSON file and templates it.
+    ///
+    /// Typically a cache refreshed out-of-band by a cron sidecar (e.g. monthly
+    /// Bailian cost): no network, no per-render cost — the heavy query lives in
+    /// the sidecar.
+    File,
 }
 
 /// Widget configuration
@@ -59,6 +65,8 @@ pub struct WidgetConfig {
     pub template: Option<String>,
     /// API configuration (for api widgets)
     pub api: Option<WidgetApiConfig>,
+    /// File configuration (for file widgets)
+    pub file: Option<WidgetFileConfig>,
     /// Detection configuration used to gate widget rendering
     pub detection: Option<WidgetDetectionConfig>,
     /// Optional filter applied to API results before rendering
@@ -139,6 +147,17 @@ pub struct WidgetApiConfig {
     #[serde(default)]
     pub headers: HashMap<String, String>,
     /// `JSONPath` expression for extracting data from response
+    pub data_path: Option<String>,
+}
+
+/// File configuration for file widgets.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct WidgetFileConfig {
+    /// Path to a local JSON file. Supports `${ENV}` substitution and a leading
+    /// `~/` for the home directory.
+    pub path: String,
+    /// Optional `JSONPath` expression selecting a sub-value before templating.
+    /// When omitted, the template renders against the whole file JSON.
     pub data_path: Option<String>,
 }
 

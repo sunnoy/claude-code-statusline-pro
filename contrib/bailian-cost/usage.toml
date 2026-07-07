@@ -1,0 +1,25 @@
+# 百炼当月花费 widget 示例配置。
+#
+# 把这个 file widget 合并进「某个已启用组件」的 multiline TOML。组件必须在
+# [components].order / preset 里（usage=U，PMBTURS 默认含 U），且 [multiline].enabled=true。
+# 放置路径示例：~/.claude/statusline-pro/components/usage.toml
+#
+# 数据来自 bailian-cost-refresh.sh 写的本地缓存；文件不存在(cron 还没跑)时 widget 自动隐藏。
+
+[meta]
+description = "百炼当月花费（sidecar 缓存，零上游）"
+version = "1.0"
+
+[widgets.bailian_cost]
+enabled = true
+type = "file"
+row = 2          # 折到主行下面的第 2 行
+col = 0
+nerd_icon = ""   # nf 货币图标
+emoji_icon = "💰"
+text_icon = "[¥]"
+template = "本月百炼 ¥{cny:.2f}"
+
+[widgets.bailian_cost.file]
+path = "~/.claude/statusline-pro/cache/bailian-cost.json"
+# data_path 可选：默认对整个文件 JSON 套 template；本例缓存顶层就是 {cny, month, ...}

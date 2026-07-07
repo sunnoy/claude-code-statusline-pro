@@ -1,0 +1,72 @@
+# Manually build bare macOS binaries (arm64 + amd64 + universal) on a GitHub
+# macOS runner, modeled on skills-tools' build-jumper workflow.
+#
+# Unlike release.yml / release-candidate.yml (which drive cargo-dist and produce
+# packaged release archives after tag-push or candidate dispatch), this workflow
+# only compiles the raw binaries and uploads them as a workflow artifact — no
+# GitHub Release, no Homebrew formula, no crates.io/npm publish. Use it when you
+# just want a local macOS build to download and try out.
+#
+# macos-latest is arm64, so aarch64-apple-darwin builds natively and
+# x86_64-apple-darwin cross-compiles using the runner's Apple toolchain — no
+# zig/zigbuild needed for macOS targets.
+name: build-macos
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build aarch64 (Apple Silicon, native)
+        run: cargo build --release --target aarch64-apple-darwin
+
+      - name: Build x86_64 (Intel, cross)
+        run: cargo build --release --target x86_64-apple-darwin
+
+      - name: Stage binaries + universal
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          cp target/aarch64-apple-darwin/release/claude-code-statusline-pro \
+             bin/claude-code-statusline-pro-darwin-arm64
+          cp target/x86_64-apple-darwin/release/claude-code-statusline-pro \
+             bin/claude-code-statusline-pro-darwin-amd64
+          lipo -create \
+            target/aarch64-apple-darwin/release/claude-code-statusline-pro \
+            target/x86_64-apple-darwin/release/claude-code-statusline-pro \
+            -output bin/claude-code-statusline-pro-darwin-universal
+          echo "--- universal archs ---"
+          lipo -archs bin/claude-code-statusline-pro-darwin-universal
+          echo "--- staged binaries ---"
+          ls -lh bin/
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: ccsp-macos-binaries
+          path: bin/*
+          if-no-files-found: error

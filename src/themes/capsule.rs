@@ -159,6 +159,34 @@ impl ThemeRenderer for CapsuleThemeRenderer {
             return Ok(String::new());
         }
 
+        if let Some((parts, separator)) = self.foldable_parts(components, colors, context)? {
+            Ok(parts.join(&separator))
+        } else {
+            // Non-capsule terminals fall back to a classic single line.
+            let supports_colors = context.terminal.supports_colors()
+                && context
+                    .config
+                    .style
+                    .enable_colors
+                    .is_enabled(context.terminal.supports_colors());
+            Ok(Self::render_classic_fallback(
+                components,
+                context,
+                supports_colors,
+            ))
+        }
+    }
+
+    fn foldable_parts(
+        &self,
+        components: &[ComponentOutput],
+        colors: &[String],
+        context: &RenderContext,
+    ) -> Result<Option<(Vec<String>, String)>> {
+        if components.is_empty() {
+            return Ok(None);
+        }
+
         let supports_colors = context.terminal.supports_colors()
             && context
                 .config
@@ -168,17 +196,16 @@ impl ThemeRenderer for CapsuleThemeRenderer {
         let use_capsule =
             context.terminal.supports_nerd_font || context.config.terminal.force_nerd_font;
 
+        // Classic fallback path is handled by `render`; not foldable here.
         if !supports_colors || !use_capsule {
-            return Ok(Self::render_classic_fallback(
-                components,
-                context,
-                supports_colors,
-            ));
+            return Ok(None);
         }
 
         // Get foreground color from theme config
         let fg_color = &context.config.themes.capsule.fg;
 
+        // Each capsule is a self-contained, fully-coloured segment, so they can
+        // be repacked across lines with a plain space separator.
         let mut rendered = Vec::with_capacity(components.len());
         let mut color_iter = colors.iter();
 
@@ -197,7 +224,7 @@ impl ThemeRenderer for CapsuleThemeRenderer {
             ));
         }
 
-        Ok(rendered.join(" "))
+        Ok(Some((rendered, " ".to_string())))
     }
 
     fn name(&self) -> &'static str {
@@ -272,6 +299,39 @@ mod tests {
         let colors = vec!["blue".to_string(), "green".to_string()];
         let result = theme.render(&components, &colors, &ctx)?;
         assert_eq!(result, "📁 Project | 🌿 main");
+        Ok(())
+    }
+
+    #[test]
+    fn test_capsule_foldable_parts_returns_capsules() -> TestResult {
+        let theme = CapsuleThemeRenderer::new();
+        let ctx = create_test_context(true, true);
+
+        let components = vec![
+            ComponentOutput::new("A".to_string()),
+            ComponentOutput::new("B".to_string()),
+        ];
+        let colors = vec!["blue".to_string(), "green".to_string()];
+
+        let (parts, separator) = theme
+            .foldable_parts(&components, &colors, &ctx)?
+            .unwrap_or_default();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(separator, " ");
+        // Each capsule is self-contained (carries its own caps).
+        assert!(parts.first().is_some_and(|p| p.contains('\u{e0b6}')));
+        assert!(parts.first().is_some_and(|p| p.contains('\u{e0b4}')));
+        Ok(())
+    }
+
+    #[test]
+    fn test_capsule_foldable_parts_none_in_classic_fallback() -> TestResult {
+        let theme = CapsuleThemeRenderer::new();
+        // No nerd font → capsule renders a classic fallback, which is not folded.
+        let ctx = create_test_context(false, true);
+
+        let components = vec![ComponentOutput::new("A".to_string())];
+        assert!(theme.foldable_parts(&components, &[], &ctx)?.is_none());
         Ok(())
     }
 }
